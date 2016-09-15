@@ -3770,7 +3770,7 @@ deliver_accumulated(Arg, Sock, ContentLength, Mode) ->
                              yaws:outh_set_transfer_encoding_off(),
                              {discard, []};
                          _ ->
-                             deflate_accumulated(Arg, iolist_to_binary(Cont),
+                             deflate_accumulated(Arg, unicode:characters_to_binary(Cont),
                                                  ContentLength, Mode)
                      end,
 
