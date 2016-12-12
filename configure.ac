@@ -205,10 +205,10 @@ dnl Get ERTS version.
 ERLANG_CHECK_ERTS
 ERLANG_CHECK_RELEASE
 
-dnl Require Erlang >=R14B02 (ERTS 5.8.3) is required.
-AX_COMPARE_VERSION([${ERLANG_ERTS_VER}], [ge], [5.8.3],
+dnl Require Erlang >=R16B01 (ERTS 5.10.2) is required.
+AX_COMPARE_VERSION([${ERLANG_ERTS_VER}], [ge], [5.10.2],
     [],
-    [AC_MSG_ERROR([Erlang R14B02 or higher is required but only Erlang $ERLANG_RELEASE was found!])])
+    [AC_MSG_ERROR([Erlang R16B01 or higher is required but only Erlang $ERLANG_RELEASE was found!])])
 
 dnl Determine directories for installation.
 if test "x${prefix}" != "xNONE" -a "x${ERLANG_INSTALL_LIB_DIR}" = "x"; then
@@ -237,8 +237,8 @@ dnl Erlang applicatons.
 dnl ------------------------------------------------------------------
 AC_ERLANG_CHECK_LIB([kernel],,   [AC_MSG_ERROR(["kernel" Erlang application not found.])])
 AC_ERLANG_CHECK_LIB([stdlib],,   [AC_MSG_ERROR(["stdlib" Erlang application not found.])])
-AC_ERLANG_CHECK_LIB([sasl],,     [AC_MSG_ERROR(["compiler" Erlang application not found.])])
-AC_ERLANG_CHECK_LIB([erts],,     [AC_MSG_ERROR(["compiler" Erlang application not found.])])
+AC_ERLANG_CHECK_LIB([sasl],,     [AC_MSG_ERROR(["sasl" Erlang application not found.])])
+AC_ERLANG_CHECK_LIB([erts],,     [AC_MSG_ERROR(["erts" Erlang application not found.])])
 AC_ERLANG_CHECK_LIB([compiler],, [AC_MSG_ERROR(["compiler" Erlang application not found.])])
 AC_ERLANG_CHECK_LIB([crypto],,   [AC_MSG_ERROR(["crypto" Erlang application not found.])])
 AC_ERLANG_CHECK_LIB([xmerl],,    [AC_MSG_ERROR(["xmerl" Erlang application not found.])])

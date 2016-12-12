@@ -985,11 +985,7 @@ unfragmented_valid_utf8(Config, WSPath, BlockSz) ->
     Fun(<<16#f0,16#90,16#80,16#80>>),
     Fun(<<16#7f>>),
     Fun(<<16#df,16#bf>>),
-
-    case yaws_dynopts:have_bad_unicode() of
-        true  -> ok;
-        false -> Fun(<<16#ef,16#bf,16#bf>>)
-    end,
+    Fun(<<16#ef,16#bf,16#bf>>),
 
     Fun(<<16#f4,16#8f,16#bf,16#bf>>),
     Fun(<<16#ed,16#9f,16#bf>>),
@@ -1468,7 +1464,7 @@ too_big_frame(Config) ->
     {ok, Sock} = open("localhost", testsuite:get_yaws_port(1, Config)),
     ?assertMatch({ok, {101, _}}, wsopen(Sock, Key, WSPath, "http://localhost", 13)),
 
-    Payload1 = yaws_dynopts:rand_bytes(16*1024*1024),
+    Payload1 = crypto:strong_rand_bytes(16*1024*1024),
     SndFrame1 = #frame{opcode=?WS_OPCODE_BINARY, payload=Payload1},
     ?assertEqual(ok, send_frame(Sock, SndFrame1, all)),
     {ok, RcvFrame} = read_frame(Sock),
@@ -1511,7 +1507,7 @@ too_big_message(Config) ->
     {ok, Sock} = open("localhost", testsuite:get_yaws_port(1, Config)),
     ?assertMatch({ok, {101, _}}, wsopen(Sock, Key, WSPath, "http://localhost", 13)),
 
-    Payload1 = yaws_dynopts:rand_bytes(16*1024*1024),
+    Payload1 = crypto:strong_rand_bytes(16*1024*1024),
     <<Frag1:(4*1024)/binary, Frag2:(4*1024)/binary,
       Frag3:(4*1024)/binary, Frag4/binary>> = Payload1,
     SndFrame1 = #frame{fin=false, opcode=?WS_OPCODE_BINARY, payload=Frag1},
@@ -1642,7 +1638,7 @@ wsflush(Sock, WithTcpClose, Acc) ->
 %% ----
 is_valid_handshake_hash(Key, Hash) ->
     Salted = Key ++ "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
-    HashBin = yaws_dynopts:hash(Salted),
+    HashBin = crypto:hash(sha, Salted),
     Hash == base64:encode_to_string(HashBin).
 
 

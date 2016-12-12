@@ -45,7 +45,7 @@ all() ->
      exhtml
     ].
 
-group() ->
+groups() ->
     [
     ].
 
@@ -526,30 +526,51 @@ arg_rewrite_response(Config) ->
 
 shaper(Config) ->
     Port = testsuite:get_yaws_port(4, Config),
-    Url = testsuite:make_url(http, "127.0.0.1", Port, "/"),
-    ?assertMatch({ok, {{_,200,_}, _, _}}, testsuite:http_get(Url)),
-    ?assertMatch({ok, {{_,200,_}, _, _}}, testsuite:http_get(Url)),
-    ?assertMatch({ok, {{_,200,_}, _, _}}, testsuite:http_get(Url)),
-    ?assertMatch({ok, {{_,503,_}, _, _}}, testsuite:http_get(Url)),
+    {ok, Sock} = gen_tcp:connect("127.0.0.1", Port, [binary, {active, false}]),
+
+    ?assertEqual(ok,
+                 testsuite:send_http_request(
+                   Sock, {get, "/", "HTTP/1.1"},
+                   [{"Host", "127.0.0.1:"++integer_to_list(Port)}]
+                  )),
+    {ok, {{_,200,_}, _, _}} = testsuite:receive_http_response(Sock),
+
+    ?assertEqual(ok,
+                 testsuite:send_http_request(
+                   Sock, {get, "/", "HTTP/1.1"},
+                   [{"Host", "127.0.0.1:"++integer_to_list(Port)}]
+                  )),
+    {ok, {{_,200,_}, _, _}} = testsuite:receive_http_response(Sock),
+
+    ?assertEqual(ok,
+                 testsuite:send_http_request(
+                   Sock, {get, "/", "HTTP/1.1"},
+                   [{"Host", "127.0.0.1:"++integer_to_list(Port)}]
+                  )),
+    {ok, {{_,200,_}, _, _}} = testsuite:receive_http_response(Sock),
+
+    ?assertEqual(ok,
+                 testsuite:send_http_request(
+                   Sock, {get, "/", "HTTP/1.1"},
+                   [{"Host", "127.0.0.1:"++integer_to_list(Port)}]
+                  )),
+    {ok, {{_,503,_}, _, _}} = testsuite:receive_http_response(Sock),
+
+    ?assertEqual(ok, gen_tcp:close(Sock)),
     ok.
 
 sslaccept_timeout(Config) ->
-    case erlang:system_info(version) of
-        "5.9.3" ->
-            {skip, "sslaccept_tout_test (skipping due to R15B03 bug)"};
-        _ ->
-            Port = testsuite:get_yaws_port(7, Config),
-            {ok, Sock} = gen_tcp:connect("127.0.0.1", Port, [binary, {active, true}]),
-            ?assertEqual(ok, receive
-                                 {tcp_closed, Sock} -> ok
-                             after
-                                 %% keepalive_timeout is set to 10 secs. So,
-                                 %% wait 15 secs before returning an error
-                                 15000 -> error
-                             end),
-            ?assertEqual(ok, gen_tcp:close(Sock)),
-            ok
-    end.
+    Port = testsuite:get_yaws_port(7, Config),
+    {ok, Sock} = gen_tcp:connect("127.0.0.1", Port, [binary, {active, true}]),
+    ?assertEqual(ok, receive
+                         {tcp_closed, Sock} -> ok
+                     after
+                         %% keepalive_timeout is set to 10 secs. So,
+                         %% wait 15 secs before returning an error
+                         15000 -> error
+                     end),
+    ?assertEqual(ok, gen_tcp:close(Sock)),
+    ok.
 
 ssl_multipart_post(Config) ->
     File      = filename:join(?tempdir(?MODULE), "www/1000.txt"),

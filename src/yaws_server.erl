@@ -62,7 +62,6 @@
              ssl,           %% ssl | nossl
              certinfo,      %% undefined | [{string(), #certinfo{}}]
              l,             %% listen socket
-             mnum = 0,
              connections = 0, %% number of TCP connections opened now
              sessions = 0,  %% number of active HTTP sessions
              reqs = 0}).    %% total number of processed HTTP requests
@@ -70,7 +69,6 @@
 
 -record(state, {gc,         %% Global conf #gc{} record
                 pairs,      %% [{GservPid, ScList}]
-                mnum = 0,   %% dyn compiled erl module  number
                 embedded    %% true if in embedded mode, false otherwise
                }).
 
@@ -190,8 +188,7 @@ init(Env) -> %% #env{Trace, TraceOut, Conf, RunMod, Embedded, Id}) ->
         true ->
             {ok, #state{gc = undefined,
                         embedded = Env#env.embedded,
-                        pairs = [],
-                        mnum = 0}}
+                        pairs = []}}
     end.
 
 
@@ -242,13 +239,13 @@ init2(GC, Sconfs, RunMod, Embedded, FirstTime) ->
     runmod(RunMod, GC),
     yaws_config:compile_and_load_src_dir(GC),
     yaws_dynopts:generate(GC),
+    yaws_dynopts:purge_old_code(),
     yaws_log:setup(GC, Sconfs),
     yaws_trace:setup(GC),
     L2 = lists:zf(fun(Group) -> start_group(GC, Group) end,
                   yaws_config:load_mime_types_module(GC, Sconfs)),
     {ok, #state{gc       = GC,
                 pairs    = L2,
-                mnum     = 0,
                 embedded = Embedded}}.
 
 
@@ -296,11 +293,6 @@ handle_call(id, _From, State) ->
 handle_call(pids, _From, State) ->  %% for gprof
     L = map(fun(X) ->element(1, X) end, State#state.pairs),
     {reply, [self() | L], State};
-
-handle_call(mnum, _From, State) ->
-    Mnum = State#state.mnum +1,
-    {reply, Mnum, State#state{mnum = Mnum}};
-
 
 
 %% This is a brutal restart of everything
@@ -664,7 +656,13 @@ gserv_loop(GS, Ready, Rnum, Last) ->
                     foreach(fun(X) -> unlink(X), exit(X, shutdown) end, Ls1),
                     exit(noserver);
                 _ ->
-                    GS2 = GS#gs{sessions = GS#gs.sessions - 1},
+                    GS2 = if (Reason == normal) orelse (Reason == shutdown) ->
+                                  %% connections already decremented
+                                  GS#gs{sessions = GS#gs.sessions - 1};
+                             true ->
+                                  GS#gs{sessions = GS#gs.sessions - 1,
+                                        connections = GS#gs.connections - 1}
+                          end,
                     if
                         Pid == Last ->
                             %% probably died due to new code loaded; if we
@@ -738,7 +736,9 @@ gserv_loop(GS, Ready, Rnum, Last) ->
                     stop_stats(OldSc),
                     NewSc1 = start_stats(NewSc),
                     stop_ready(Ready, Last),
-                    NewSc2 = clear_ets_complete(NewSc1),
+                    NewSc2 = clear_ets_complete(
+                               NewSc1#sconf{ets = OldSc#sconf.ets}
+                              ),
                     GS2 = GS#gs{group = yaws:insert_at(
                                           NewSc2, Pos,
                                           lists:delete(OldSc, GS#gs.group)
@@ -1520,7 +1520,7 @@ pick_sconf({nossl, _}, GC, H, Group) ->
 pick_sconf({ssl, _}, #gconf{sni=disable}=GC, H, Group) ->
     pick_sconf(GC, H, Group);
 pick_sconf({ssl, Sock}, GC, H, Group) ->
-    SniHost = case ssl:connection_information(Sock, [sni_hostname]) of
+    SniHost = case yaws_dynopts:connection_information(Sock, [sni_hostname]) of
                   {ok, [{sni_hostname, SN}]} -> SN;
                   _                          -> undefined
               end,
@@ -2063,12 +2063,11 @@ is_auth(ARG, Req_dir, H, [Auth_methods|T], {_Ret, Auth_headers}) ->
     end.
 
 handle_auth(#arg{client_ip_port={IP,_}}=ARG, Auth_H,
-            #auth{acl={AllowIPs, DenyIPs, Order}, usertab=Usertab}=Auth_methods,
-            Ret) ->
+            #auth{acl={AllowIPs, DenyIPs, Order}}=Auth_methods, Ret) ->
     Fun  = fun(IpMask) -> yaws:match_ipmask(IP, IpMask) end,
     Ret1 = case Auth_methods of
-               #auth{pam=false,mod=[]} when Usertab == none -> true;
-               _                                            -> Ret
+               #auth{users=[],pam=false,mod=[]} -> true;
+               _                                -> Ret
            end,
     case {AllowIPs, DenyIPs, Order} of
         {_, all, deny_allow} ->
@@ -2120,11 +2119,10 @@ handle_auth(#arg{client_ip_port={IP,_}}=ARG, Auth_H,
             end
     end;
 
-handle_auth(_ARG, _Auth_H, #auth{usertab=none,pam=false,mod=[]}, true) ->
+handle_auth(_ARG, _Auth_H, #auth{users=[],pam=false,mod=[]}, true) ->
     true;
 
-handle_auth(ARG, _Auth_H,
-            Auth_methods=#auth{usertab=none,pam=false,mod=[]}, Ret) ->
+handle_auth(ARG, _Auth_H, Auth_methods=#auth{users=[],pam=false,mod=[]}, Ret) ->
     maybe_auth_log({401, Auth_methods#auth.realm}, ARG),
     {Ret, Auth_methods};
 
@@ -2166,8 +2164,7 @@ handle_auth(ARG, Auth_H, Auth_methods = #auth{mod = Mod}, Ret) when Mod /= [] ->
 
 %% if the headers are undefined we do not need to check Pam or Users
 handle_auth(ARG, undefined, Auth_methods, Ret) ->
-    handle_auth(ARG, undefined,
-                Auth_methods#auth{pam = false, usertab=none}, Ret);
+    handle_auth(ARG, undefined, Auth_methods#auth{pam = false, users= []}, Ret);
 
 handle_auth(ARG, {User, Password, OrigString},
             Auth_methods = #auth{pam = Pam}, Ret) when Pam /= false ->
@@ -2181,14 +2178,17 @@ handle_auth(ARG, {User, Password, OrigString},
     end;
 
 handle_auth(ARG, {User, Password, OrigString},
-            Auth_methods = #auth{usertab = Users}, Ret) when Users /= none ->
-    case ets:match(Users, {User, Password}) of
-        [_|_] ->
+            Auth_methods = #auth{users = Users}, Ret) when Users /= [] ->
+    F = fun({U, A, S, H}) ->
+                (U == User andalso H == crypto:hash(A, [S,Password]))
+        end,
+    case lists:any(F, Users) of
+        true ->
             maybe_auth_log({ok, User}, ARG),
             true;
-        [] ->
+        false ->
             handle_auth(ARG, {User, Password, OrigString},
-                        Auth_methods#auth{usertab = none}, Ret)
+                        Auth_methods#auth{users = []}, Ret)
     end.
 
 
@@ -2788,25 +2788,21 @@ do_yaws(CliSock, ARG, UT, N) ->
                                               Es == 0 ->
             deliver_dyn_file(CliSock, Spec, ARG, UT, N);
         Other  ->
-            del_old_files(get(gc),Other),
-            {ok, [{errors, Errs}| Spec]} =
-                yaws_compile:compile_file(UT#urltype.fullpath),
+            purge_old_mods(get(gc),Other),
+            {ok, NbErrs, Spec} = yaws_compile:compile_file(UT#urltype.fullpath),
             ?Debug("Spec for file ~s is:~n~p~n",[UT#urltype.fullpath, Spec]),
-            ets:insert(SC#sconf.ets, {Key, spec, Mtime, Spec, Errs}),
+            ets:insert(SC#sconf.ets, {Key, spec, Mtime, Spec, NbErrs}),
             deliver_dyn_file(CliSock, Spec, ARG, UT, N)
     end.
 
 
-del_old_files(_, []) ->
+purge_old_mods(_, []) ->
     ok;
-del_old_files(_GC, [{_FileAtom, spec, _Mtime1, Spec, _}]) ->
+purge_old_mods(_GC, [{_FileAtom, spec, _Mtime1, Spec, _}]) ->
     foreach(
       fun({mod, _, _, _,  Mod, _Func}) ->
-              F=filename:join([yaws:tmpdir(), "yaws",
-                               yaws:to_list(Mod) ++ ".erl"]),
               code:purge(Mod),
-              code:purge(Mod),
-              file:delete(F);
+              code:purge(Mod);
          (_) ->
               ok
       end, Spec).
@@ -3207,12 +3203,12 @@ handle_out_reply({yssi, Yfile}, LineNo, YawsFile, UT, ARG) ->
                                                       Es == 0 ->
                     deliver_dyn_file(CliSock, Spec ++ [yssi], ARG, UT2, N);
                 Other  ->
-                    del_old_files(get(gc), Other),
-                    {ok, [{errors, Errs}| Spec]} =
+                    purge_old_mods(get(gc), Other),
+                    {ok, NbErrs, Spec} =
                         yaws_compile:compile_file(UT2#urltype.fullpath),
                     ?Debug("Spec for file ~s is:~n~p~n",
                            [UT2#urltype.fullpath, Spec]),
-                    ets:insert(SC#sconf.ets, {Key, spec, Mtime, Spec, Errs}),
+                    ets:insert(SC#sconf.ets, {Key, spec, Mtime, Spec, NbErrs}),
                     deliver_dyn_file(CliSock, Spec ++ [yssi], ARG, UT2, N)
             end;
         error when SC#sconf.xtra_docroots /= [] ->

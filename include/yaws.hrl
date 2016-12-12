@@ -277,7 +277,7 @@
           realm   = "",
           type    = "Basic",
           headers = [],    % headers to send on 401
-          usertab = none,  % ETS table of {User, Password}, or none
+          users   = [],    % list of {User, Password} tuples
           acl     = none,  % list of allowed/denies IPs or none
           mod     = [],    % authentication module callback
           outmod  = [],    % module to handles 401 unauthorized messages
@@ -392,7 +392,8 @@
           conf,
           runmod,
           embedded,
-          id
+          id,
+          encoding=latin1
          }).
 
 %% Typically used in error printouts as in:

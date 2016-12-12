@@ -2,6 +2,7 @@ sudo: false
 
 language: erlang
 otp_release:
+  - 19.1
   - 19.0
   - 18.3
   - 18.2.1
@@ -17,9 +18,6 @@ otp_release:
   - R16B03
   - R16B02
   - R16B01
-  - R15B03
-  - R15B02
-  - R15B01
 
 env:
   global:

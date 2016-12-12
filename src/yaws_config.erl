@@ -23,7 +23,6 @@
          add_yaws_auth/1,
          add_yaws_soap_srv/1, add_yaws_soap_srv/2,
          load_mime_types_module/2,
-         new_usertab/0,
          compile_and_load_src_dir/1,
          search_sconf/3, search_group/3,
          update_sconf/4, delete_sconf/3,
@@ -61,7 +60,7 @@ load(E = #env{conf = false}) ->
 load(E) ->
     {file, File} = E#env.conf,
     error_logger:info_msg("Yaws: Using config file ~s~n", [File]),
-    case file:open(File, [read]) of
+    case file:open(File, [read, {encoding, E#env.encoding}]) of
         {ok, FD} ->
             GC = make_default_gconf(E#env.debug, E#env.id),
             GC1 = if E#env.traceoutput == undefined ->
@@ -128,8 +127,6 @@ setup_auth(#sconf{docroot = Docroot, xtra_docroots = XtraDocroots,
          {D, Authdirs4}
      end || D <- [Docroot|XtraDocroots] ].
 
-new_usertab() ->
-    ets:new(yaws_docroot_auth, [protected]).
 
 load_yaws_auth_from_docroot(_, true) ->
     [];
@@ -270,8 +267,43 @@ parse_yaws_auth_file([{file, File}|T], Auth0) ->
 
 parse_yaws_auth_file([{User, Password}|T], Auth0)
   when is_list(User), is_list(Password) ->
-    Auth1 = store_user_and_password(Auth0, {User, Password}),
-    parse_yaws_auth_file(T, Auth1);
+    Salt = crypto:strong_rand_bytes(32),
+    Hash = crypto:hash(sha256, [Salt, Password]),
+    Users = case lists:member({User, sha256, Salt, Hash}, Auth0#auth.users) of
+                true  -> Auth0#auth.users;
+                false -> [{User, sha256, Salt, Hash} | Auth0#auth.users]
+            end,
+    parse_yaws_auth_file(T, Auth0#auth{users = Users});
+
+parse_yaws_auth_file([{User, Algo, B64Hash}|T], Auth0)
+  when is_list(User), is_list(Algo), is_list(B64Hash) ->
+    case parse_auth_user(User, Algo, "", B64Hash) of
+        {ok, Res} ->
+            Users = case lists:member(Res, Auth0#auth.users) of
+                        true  -> Auth0#auth.users;
+                        false -> [Res | Auth0#auth.users]
+                    end,
+            parse_yaws_auth_file(T, Auth0#auth{users = Users});
+        {error, Reason} ->
+            error_logger:format("Failed to parse user line ~p: ~p~n",
+                                [{User, Algo, B64Hash}, Reason]),
+            parse_yaws_auth_file(T, Auth0)
+    end;
+
+parse_yaws_auth_file([{User, Algo, B64Salt, B64Hash}|T], Auth0)
+  when is_list(User), is_list(Algo), is_list(B64Salt), is_list(B64Hash) ->
+    case parse_auth_user(User, Algo, B64Salt, B64Hash) of
+        {ok, Res} ->
+            Users = case lists:member(Res, Auth0#auth.users) of
+                        true  -> Auth0#auth.users;
+                        false -> [Res | Auth0#auth.users]
+                    end,
+            parse_yaws_auth_file(T, Auth0#auth{users = Users});
+        {error, Reason} ->
+            error_logger:format("Failed to parse user line ~p: ~p~n",
+                                [{User, Algo, B64Hash, B64Hash}, Reason]),
+            parse_yaws_auth_file(T, Auth0)
+    end;
 
 parse_yaws_auth_file([{allow, all}|T], Auth0) ->
     Auth1 = case Auth0#auth.acl of
@@ -322,13 +354,6 @@ parse_yaws_auth_file([{order, O}|T], Auth0)
     parse_yaws_auth_file(T, Auth1).
 
 
-store_user_and_password(Auth = #auth{usertab = none}, UandP) ->
-    Tab = new_usertab(),
-    store_user_and_password(Auth#auth{usertab = Tab}, UandP);
-
-store_user_and_password(Auth = #auth{usertab = Tab}, UandP) ->
-    ets:insert(Tab, UandP),
-    Auth.
 
 %% Create mime_types.erl, compile it and load it. If everything is ok,
 %% reload groups.
@@ -2105,13 +2130,15 @@ fload(FD, server_auth, GC, C, Lno, Chars) ->
             fload(FD, server_auth, GC, C1, Lno+1, ?NEXTLINE);
 
         ["user", '=', User] ->
-            case (catch string:tokens(User, ":")) of
-                [Name, Passwd] ->
-                    Auth1 = store_user_and_password(Auth, {Name, Passwd}),
+            case parse_auth_user(User, Lno) of
+                {Name, Algo, Salt, Hash} ->
+                    Auth1 = Auth#auth{
+                              users = [{Name, Algo, Salt, Hash}|Auth#auth.users]
+                             },
                     C1 = C#sconf{authdirs=[Auth1|AuthDirs]},
                     fload(FD, server_auth, GC, C1, Lno+1, ?NEXTLINE);
-                _ ->
-                    {error, ?F("Invalid user at line ~w", [Lno])}
+                {error, Str} ->
+                    {error, Str}
             end;
 
         ["allow", '=', "all"] ->
@@ -2181,10 +2208,10 @@ fload(FD, server_auth, GC, C, Lno, Chars) ->
 
         ['<', "/auth", '>'] ->
             Pam = Auth#auth.pam,
-            Usertab = Auth#auth.usertab,
+            Users = Auth#auth.users,
             Realm = Auth#auth.realm,
-            Auth1 =  case {Pam, Usertab} of
-                         {false, none} ->
+            Auth1 =  case {Pam, Users} of
+                         {false, []} ->
                              Auth;
                          _ ->
                              H = Auth#auth.headers ++
@@ -2974,7 +3001,6 @@ parse_redirect(_Path, _, _Mode, Lno) ->
     {error, ?F("Bad redirect rule at line ~w", [Lno])}.
 
 
-
 ssl_start() ->
     case catch ssl:start() of
         ok ->
@@ -3315,6 +3341,46 @@ parse_auth_ips([Str|Rest], Result) ->
         _:_ -> parse_auth_ips(Rest, Result)
     end.
 
+parse_auth_user(User, Lno) ->
+    try
+        [Name, Passwd] = string:tokens(User, ":"),
+        case re:run(Passwd, "{([^}]+)}(?:\\$([^$]+)\\$)?(.+)", [{capture,all_but_first,list}]) of
+            {match, [Algo, B64Salt, B64Hash]} ->
+                case parse_auth_user(Name, Algo, B64Salt, B64Hash) of
+                    {ok, Res} ->
+                        Res;
+                    {error, bad_algo} ->
+                        {error, ?F("Unsupported hash algorithm '~p' at line ~w",
+                                   [Algo, Lno])};
+                    {error, bad_user} ->
+                        {error, ?F("Invalid user at line ~w", [Lno])}
+                end;
+            _ ->
+                Salt = crypto:strong_rand_bytes(32),
+                {Name, sha256, Salt, crypto:hash(sha256, [Salt, Passwd])}
+        end
+    catch
+        _:_ ->
+            {error, ?F("Invalid user at line ~w", [Lno])}
+    end.
+
+parse_auth_user(User, Algo, B64Salt, B64Hash) ->
+    try
+        if
+            Algo == "md5"    orelse Algo == "sha"    orelse
+            Algo == "sha224" orelse Algo == "sha256" orelse
+            Algo == "sha384" orelse Algo == "sha512" orelse
+            Algo == "ripemd160" ->
+                Salt = base64:decode(B64Salt),
+                Hash = base64:decode(B64Hash),
+                {ok, {User, list_to_atom(Algo), Salt, Hash}};
+            true ->
+                {error, bad_algo}
+        end
+    catch
+        _:_ -> {error, bad_user}
+    end.
+
 
 subconfigfiles(FD, Name, Lno) ->
     {ok, Config} = file:pid2name(FD),
@@ -3324,16 +3390,9 @@ subconfigfiles(FD, Name, Lno) ->
         {true,_} ->
             {ok, [File]};
         {false,true} ->
-            case yaws_dynopts:have_bad_wildcard() of
-                true ->
-                    {error, ?F("Unsupport wildcard at line ~w"
-                               " [support by releases >= R16A ]",[Lno])};
-                false ->
-                    Names = filelib:wildcard(Name, ConfPath),
-                    Files = [filename:absname(N, ConfPath)
-                             || N <- lists:sort(Names)],
-                    {ok, lists:filter(fun filter_subconfigfile/1, Files)}
-            end;
+            Names = filelib:wildcard(Name, ConfPath),
+            Files = [filename:absname(N, ConfPath) || N <- lists:sort(Names)],
+            {ok, lists:filter(fun filter_subconfigfile/1, Files)};
         {false,false} ->
             {error, ?F("Expect filename or wildcard at line ~w"
                        " (subconfig: ~s)", [Lno, Name])}

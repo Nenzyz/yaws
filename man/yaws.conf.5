@@ -290,10 +290,6 @@ Or, relatively to the configuration location:
   subconfig = vhosts/*.conf
 .fi
 
-\fBWARNING: because of a bug in filelib:wildcard/2, wildcard strings are
-forbidden for Erlang/OTP R15B03 and previous.\fR
-
-
 .TP
 \fBsubconfigdir = Directory\fR
 Load all config files found in the specified directory. The given Directory can
@@ -1220,9 +1216,6 @@ application. For example, to support only TLS versions 1.2, 1.1, and 1:
 
 protocol_version = tlsv1.2, tlsv1.1, tlsv1
 .fi
-
-\fBWARNING: Erlang/OTP R16B01 or higher is required in order to let it work
-(because of a bug in previous releases).\fR
 .RE
 
 .IP
@@ -1355,11 +1348,22 @@ callback would check if a valid cookie header is present, if not it would return
 .RE
 
 .IP
-\fBuser = User:Password\fR
+\fBuser = User:Password | "User:{Algo}Hash" | "User:{Algo}$Salt$Hash"\fR
 .RS 12
-Inside this directory, the user User has access if the user supplies the
-password Password in the popup dialogue presented by the browser.  We can
-obviously have several of these value inside a single <auth> </auth> pair.
+Inside this directory, the user \fIUser\fR has access if the user supplies the
+password \fIPassword\fR in the popup dialogue presented by the browser. It is
+also possible to provide a hashed password, encoded in base64. In that case, the
+algorithm used to hash the password must be set. \fIAlgo\fR must be a one of the
+following algorithms:
+
+.nf
+    md5 | ripemd160 | sha | sha224 | sha256 | sha384 | sha512
+.fi
+
+It is possible to use salted hashes. If so, the \fISalt\fR must be provided,
+encoded in base64. We can obviously have several of these value inside a single
+<auth> </auth> pair.
+
 .RE
 
 .IP
